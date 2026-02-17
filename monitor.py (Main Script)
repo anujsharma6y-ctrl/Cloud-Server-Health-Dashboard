@@ -1,0 +1,121 @@
+import os
+import psutil
+import csv
+import boto3
+from botocore.exceptions import ClientError
+
+# =========================
+# SYSTEM MONITORING
+# =========================
+
+def get_disk_usage():
+    disk = psutil.disk_usage('/')
+    return disk.percent
+
+def get_cpu_usage():
+    return psutil.cpu_percent(interval=1)
+
+def get_memory_usage():
+    memory = psutil.virtual_memory()
+    return memory.percent
+
+
+# =========================
+# AWS CHECKS
+# =========================
+
+def check_s3_buckets():
+    s3 = boto3.client('s3')
+    buckets_info = []
+
+    try:
+        response = s3.list_buckets()
+        for bucket in response['Buckets']:
+            bucket_name = bucket['Name']
+            status = "Private"
+
+            try:
+                acl = s3.get_bucket_acl(Bucket=bucket_name)
+                for grant in acl['Grants']:
+                    if 'URI' in grant['Grantee']:
+                        if 'AllUsers' in grant['Grantee']['URI']:
+                            status = "Public"
+            except ClientError:
+                status = "Access Denied"
+
+            buckets_info.append((bucket_name, status))
+
+    except ClientError as e:
+        print("AWS Error:", e)
+
+    return buckets_info
+
+
+def check_iam_admin_users():
+    iam = boto3.client('iam')
+    admin_users = []
+
+    try:
+        users = iam.list_users()['Users']
+        for user in users:
+            policies = iam.list_attached_user_policies(UserName=user['UserName'])
+            for policy in policies['AttachedPolicies']:
+                if policy['PolicyName'] == "AdministratorAccess":
+                    admin_users.append(user['UserName'])
+
+    except ClientError as e:
+        print("IAM Error:", e)
+
+    return admin_users
+
+
+# =========================
+# REPORT GENERATION
+# =========================
+
+def generate_report():
+    disk = get_disk_usage()
+    cpu = get_cpu_usage()
+    memory = get_memory_usage()
+    buckets = check_s3_buckets()
+    admin_users = check_iam_admin_users()
+
+    print("\n===== SERVER HEALTH REPORT =====\n")
+    print(f"Disk Usage: {disk}%")
+    print(f"CPU Usage: {cpu}%")
+    print(f"Memory Usage: {memory}%\n")
+
+    print("S3 Buckets:")
+    for name, status in buckets:
+        print(f"- {name} ({status})")
+
+    print("\nIAM Admin Users:")
+    if admin_users:
+        for user in admin_users:
+            print(f"- {user}")
+    else:
+        print("No Admin Users Found")
+
+    # Save CSV
+    with open("server_report.csv", mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Metric", "Value"])
+        writer.writerow(["Disk Usage", f"{disk}%"])
+        writer.writerow(["CPU Usage", f"{cpu}%"])
+        writer.writerow(["Memory Usage", f"{memory}%"])
+
+        writer.writerow([])
+        writer.writerow(["S3 Buckets", "Status"])
+        for name, status in buckets:
+            writer.writerow([name, status])
+
+        writer.writerow([])
+        writer.writerow(["IAM Admin Users"])
+        for user in admin_users:
+            writer.writerow([user])
+
+    print("\nReport saved as server_report.csv")
+
+
+if __name__ == "__main__":
+    generate_report()
